@@ -1,19 +1,16 @@
 import os
-import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     PreCheckoutQueryHandler, ContextTypes, filters,
 )
-
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("construction-doc-bot")
+from byok import create_link, consume_link, delete_key, get_key, init_db as init_byok_db, mask_key, page_html, save_key, success_html, error_html
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
@@ -60,6 +57,7 @@ def db():
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, plan TEXT, expires_at TEXT, quota INTEGER NOT NULL DEFAULT 3)")
     conn.execute("CREATE TABLE IF NOT EXISTS payments (charge_id TEXT PRIMARY KEY, user_id INTEGER, plan TEXT, stars INTEGER, paid_at TEXT)")
+    init_byok_db(conn)
     conn.commit()
     return conn
 
@@ -99,7 +97,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Команды:\n/start — начать работу\n/help — помощь\n/status — состояние и остаток\n/plans — тарифы\n\n"
+        "Команды:\n/start — начать работу\n/help — помощь\n/status — состояние и остаток\n/plans — тарифы\n/connect_ai — подключить личный ИИ-ключ\n/ai_status — статус личного ИИ\n/disconnect_ai — удалить личный ИИ-ключ\n\n"
         "Для проверки отправьте документ или опишите задачу текстом.", reply_markup=menu()
     )
 
@@ -117,6 +115,29 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(plan_text(), reply_markup=plans_menu())
+
+
+async def connect_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not PUBLIC_BASE_URL or not PUBLIC_BASE_URL.startswith("https://"):
+        await update.message.reply_text("Подключение личного ИИ временно недоступно: администратор ещё не настроил HTTPS-адрес сервиса.")
+        return
+    conn = db()
+    link = create_link(conn, update.effective_user.id, PUBLIC_BASE_URL)
+    conn.close()
+    await update.message.reply_text("Не отправляйте API-ключ в Telegram. Откройте одноразовую ссылку (15 минут):\n\n" + link + "\n\nКлюч будет зашифрован и не будет показан повторно.")
+
+
+async def ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = db(); item = get_key(conn, update.effective_user.id); conn.close()
+    if not item:
+        await update.message.reply_text("Личный ИИ-ключ не подключён. Используйте /connect_ai.")
+        return
+    await update.message.reply_text(f"Личный ИИ подключён. Провайдер: {item['provider']}; модель: {item['model']}; ключ: {mask_key(item['api_key'])}")
+
+
+async def disconnect_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = db(); delete_key(conn, update.effective_user.id); conn.close()
+    await update.message.reply_text("Личный ИИ-ключ удалён из зашифрованного хранилища.")
 
 
 async def send_plan_invoice(query, plan_key: str):
@@ -225,6 +246,9 @@ telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CommandHandler("help", help_cmd))
 telegram_app.add_handler(CommandHandler("status", status))
 telegram_app.add_handler(CommandHandler("plans", plans))
+telegram_app.add_handler(CommandHandler("connect_ai", connect_ai))
+telegram_app.add_handler(CommandHandler("ai_status", ai_status))
+telegram_app.add_handler(CommandHandler("disconnect_ai", disconnect_ai))
 telegram_app.add_handler(PreCheckoutQueryHandler(pre_checkout))
 telegram_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, document_message))
 telegram_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
@@ -240,6 +264,36 @@ async def root():
 @api.get("/health")
 async def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@api.get("/connect/{token}")
+async def connect_page(token: str):
+    if len(token) < 20:
+        raise HTTPException(status_code=404, detail="invalid link")
+    response = HTMLResponse(page_html(token))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@api.post("/connect/{token}")
+async def connect_submit(token: str, request: Request):
+    conn = db()
+    user_id = consume_link(conn, token)
+    if not user_id:
+        conn.close()
+        return HTMLResponse(error_html("Ссылка недействительна или истекла. Запросите новую через /connect_ai."), status_code=410)
+    form = await request.form()
+    provider = str(form.get("provider", "")); model = str(form.get("model", "")); endpoint = str(form.get("endpoint", "")); api_key = str(form.get("api_key", ""))
+    try:
+        save_key(conn, user_id, provider, model, endpoint, api_key)
+    except ValueError:
+        conn.close()
+        return HTMLResponse(error_html("Проверьте провайдера, модель, HTTPS endpoint и API-ключ."), status_code=400)
+    conn.close()
+    response = HTMLResponse(success_html())
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @api.post("/telegram/webhook")

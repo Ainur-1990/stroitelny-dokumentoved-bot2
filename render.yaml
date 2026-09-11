@@ -11,5 +11,7 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL
         sync: false
+      - key: BYOK_ENCRYPTION_KEY
+        sync: false
       - key: POLLING_MODE
         value: "false"
