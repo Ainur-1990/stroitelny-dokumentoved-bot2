@@ -2,6 +2,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -14,6 +15,22 @@ from telegram.ext import (
 import ai
 import byok
 from extract import MAX_FILE_BYTES, ExtractionError, extract_text
+
+
+def _load_dotenv() -> None:
+    """Локальный запуск из .env рядом с app.py; переменные окружения имеют приоритет."""
+    env_file = Path(__file__).resolve().parent / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_dotenv()
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
