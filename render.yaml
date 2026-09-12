@@ -13,5 +13,15 @@ services:
         sync: false
       - key: BYOK_ENCRYPTION_KEY
         sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+      - key: AI_PROVIDER
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: AI_ENDPOINT
+        sync: false
+      - key: AI_API_KEY
+        sync: false
       - key: POLLING_MODE
         value: "false"
