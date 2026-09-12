@@ -6,6 +6,7 @@ Fernet-encrypted provider keys and SHA-256 hashes of one-time link tokens.
 import hashlib
 import hmac
 import html
+import ipaddress
 import os
 import secrets
 import sqlite3
@@ -58,15 +59,37 @@ def consume_link(conn: sqlite3.Connection, raw_token: str):
     return int(row["user_id"])
 
 
-def save_key(conn: sqlite3.Connection, user_id: int, provider: str, model: str, endpoint: str, api_key: str) -> None:
+def _public_https(endpoint: str) -> bool:
+    """Endpoint обязан быть публичным HTTPS-адресом: без localhost и приватных сетей."""
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host or host == "localhost" or host.endswith((".local", ".internal", ".lan")):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # доменное имя — допустимо
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast)
+
+
+def validate_input(provider: str, model: str, endpoint: str, api_key: str) -> None:
+    """Проверка полей до расходования одноразовой ссылки."""
     if provider not in BYOK_ALLOWED_PROVIDERS:
-        raise ValueError("unsupported provider")
+        raise ValueError("Выберите провайдера из списка.")
+    if not model or len(model) > 200:
+        raise ValueError("Укажите название модели.")
     if not api_key or len(api_key) > 4096:
-        raise ValueError("invalid key")
-    if len(model) > 200 or len(endpoint) > 500:
-        raise ValueError("invalid model or endpoint")
-    if endpoint and (urlparse(endpoint).scheme != "https" or not urlparse(endpoint).netloc):
-        raise ValueError("endpoint must be HTTPS")
+        raise ValueError("Проверьте API-ключ.")
+    if len(endpoint) > 500:
+        raise ValueError("Endpoint слишком длинный.")
+    if endpoint and not _public_https(endpoint):
+        raise ValueError("Endpoint должен быть публичным HTTPS-адресом.")
+
+
+def save_key(conn: sqlite3.Connection, user_id: int, provider: str, model: str, endpoint: str, api_key: str) -> None:
+    validate_input(provider, model, endpoint, api_key)
     encrypted = _fernet().encrypt(api_key.encode())
     conn.execute(
         "INSERT INTO byok_keys(user_id,provider,model,endpoint,encrypted_key,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET provider=excluded.provider,model=excluded.model,endpoint=excluded.endpoint,encrypted_key=excluded.encrypted_key,updated_at=excluded.updated_at",
