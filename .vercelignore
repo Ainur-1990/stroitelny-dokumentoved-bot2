@@ -1,0 +1,11 @@
+.venv
+tests
+marketing
+.env
+.env.*
+*.sqlite3
+Dockerfile
+render.yaml
+DEPLOYMENT.md
+PAYMENTS.md
+README.md

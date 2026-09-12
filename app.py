@@ -50,6 +50,7 @@ if not TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
 api = FastAPI(title="Строительный Документовед")
+app = api  # Vercel ищет FastAPI-инстанс с именем app
 telegram_app = Application.builder().token(TOKEN).build()
 SERVER_AI = ai.server_config()
 
